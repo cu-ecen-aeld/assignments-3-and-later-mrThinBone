@@ -141,18 +141,18 @@ sudo mknod -m 600 dev/console c 5 1
 
 
 # TODO: Clean and build the writer utility
-cd ~/system-programming/assignment-3-mrThinBone/finder-app
+cd $GITHUB_WORKSPACE/finder-app
 make clean
 make CROSS_COMPILE=$CROSS_COMPILE
 
 # TODO: Copy the finder related scripts and executables to the /home directory
 # on the target rootfs
 mkdir -p "${OUTDIR}/rootfs/home/conf"
-cp ~/system-programming/assignment-3-mrThinBone/finder-app/writer "${OUTDIR}/rootfs/home/"
-cp ~/system-programming/assignment-3-mrThinBone/finder-app/finder.sh "${OUTDIR}/rootfs/home/"
-cp ~/system-programming/assignment-3-mrThinBone/finder-app/finder-test.sh "${OUTDIR}/rootfs/home/"
-cp ~/system-programming/assignment-3-mrThinBone/finder-app/autorun-qemu.sh "${OUTDIR}/rootfs/home/"
-cp -r ~/system-programming/assignment-3-mrThinBone/conf/. "${OUTDIR}/rootfs/home/conf/"
+cp $GITHUB_WORKSPACE/finder-app/writer "${OUTDIR}/rootfs/home/"
+cp $GITHUB_WORKSPACE/finder-app/finder.sh "${OUTDIR}/rootfs/home/"
+cp $GITHUB_WORKSPACE/finder-app/finder-test.sh "${OUTDIR}/rootfs/home/"
+cp $GITHUB_WORKSPACE/finder-app/autorun-qemu.sh "${OUTDIR}/rootfs/home/"
+cp -r $GITHUB_WORKSPACE/conf/. "${OUTDIR}/rootfs/home/conf/"
 
 # TODO: Chown the root directory
 cd "${OUTDIR}/rootfs"
