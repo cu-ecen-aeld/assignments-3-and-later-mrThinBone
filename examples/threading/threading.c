@@ -31,16 +31,20 @@ void* threadfunc(void* thread_param)
     pthread_mutex_t *lock = thread_func_args->mutex;
     msleep(wait_to_obtain_ms); // sleep for wait_to_obtain_ms milliseconds
 
-    DEBUG_LOG("Thread %d is waiting to obtain the lock", pthread_self());
+    DEBUG_LOG("Thread %lu is waiting to obtain the lock", pthread_self());
     // obtain the mutex lock
-    pthread_mutex_lock(lock);
-    DEBUG_LOG("Thread %d has obtained the lock", pthread_self());
+    int ret = pthread_mutex_lock(lock);
+    if (ret != 0) return thread_param;
+    DEBUG_LOG("Thread %lu has obtained the lock", pthread_self());
     msleep(wait_to_release_ms); // sleep for wait_to_release_ms milliseconds
 
-    DEBUG_LOG("Thread %d is releasing the lock", pthread_self());
+    DEBUG_LOG("Thread %lu is releasing the lock", pthread_self());
     // release the mutex lock
-    pthread_mutex_unlock(lock);
-
+    ret = pthread_mutex_unlock(lock);
+    if (ret != 0) return thread_param;
+    
+    
+    thread_func_args->thread_complete_success = true;
     
     return thread_param;
 }
@@ -63,17 +67,17 @@ bool start_thread_obtaining_mutex(pthread_t *thread, pthread_mutex_t *mutex,int 
     thread_func_args->wait_to_obtain_ms = wait_to_obtain_ms;
     thread_func_args->wait_to_release_ms = wait_to_release_ms;
     thread_func_args->thread_complete_success = false;
-
-    int rc = pthread_create(thread, NULL, threadfunc, (void *) thread_func_args) == 0;
+    
+    int rc = pthread_create(thread, NULL, threadfunc, (void *) thread_func_args);
     if(rc != 0) {
-        ERROR_LOG("Error creating thread");
+        ERROR_LOG("Error creating thread %d", rc);
         free(thread_func_args);
         thread_func_args = NULL;
         return false;
     }
-    DEBUG_LOG("Thread %lu created successfully", (unsigned long)*thread);
+    DEBUG_LOG("Thread %lu started successfully", (unsigned long)*thread);
 
-    struct thread_data* thread_func_return;
+    /*struct thread_data* thread_func_return;
     int rc2 = pthread_join(*thread, (void **)&thread_func_return);
     if (rc2 != 0) {
         ERROR_LOG("Error joining thread");
@@ -87,8 +91,7 @@ bool start_thread_obtaining_mutex(pthread_t *thread, pthread_mutex_t *mutex,int 
     thread_func_args = NULL;
     thread_func_return = NULL;
 
-    DEBUG_LOG("Thread %lu completed with success: %d", (unsigned long)*thread, success);
+    DEBUG_LOG("Thread %lu completed with success: %d", (unsigned long)*thread, success);*/
 
-    return success;
+    return true;
 }
-
