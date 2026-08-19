@@ -3,22 +3,26 @@ CC = $(CROSS_COMPILE)gcc
 
 # Compiler flags
 CFLAGS = -g -Wall -Werror
+LDLIBS = -lpthread
 INCLUDES = -I/
 
 # Default target
 all: aesdsocket
 
 # Link the object file to create the executable
-aesdsocket: server.o
-	$(CC) $(CFLAGS) $(INCLUDES) server.o -o aesdsocket
+aesdsocket: server.o linkedlist.o
+	$(CC) $(CFLAGS) $(INCLUDES) server.o linkedlist.o -o aesdsocket $(LDLIBS)
 
 # Compile the C source file into an object file
+linkedlist.o: linkedlist.c
+	$(CC) $(CFLAGS) -c -o linkedlist.o linkedlist.c
+
 server.o: server.c
 	$(CC) $(CFLAGS) -c -o server.o server.c
 
 # Clean target to remove the executable and object files
 clean:
-	rm -f aesdsocket server.o
+	rm -f aesdsocket server.o linkedlist.o
 
 # Mark 'all' and 'clean' as phony targets (they are not files)
 .PHONY: all clean
