@@ -14,8 +14,8 @@ aesdsocket: server.o linkedlist.o
 	$(CC) $(CFLAGS) $(INCLUDES) server.o linkedlist.o -o aesdsocket $(LDLIBS)
 
 # Compile the C source file into an object file
-linkedlist.o: linkedlist.c
-	$(CC) $(CFLAGS) -c -o linkedlist.o linkedlist.c
+linkedlist.o: linked_list.c
+	$(CC) $(CFLAGS) -c -o linkedlist.o linked_list.c
 
 server.o: server.c
 	$(CC) $(CFLAGS) -c -o server.o server.c

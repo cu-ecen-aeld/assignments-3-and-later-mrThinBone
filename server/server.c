@@ -18,6 +18,7 @@
 #include <stdarg.h>
 #include <stdlib.h>
 #include <pthread.h>
+#include <time.h>
 #include "linked_list.h"
 
 // ps aux | grep aesdsocket
@@ -274,12 +275,51 @@ int sendResponse(int client_fd, char* buffer, size_t allocated) {
     return shutdown_requested == 0 ? 0 : -1;
 }
 
+void *timestamp_thread(void *arg)
+{
+    pthread_rwlock_t *file_mutex = (pthread_rwlock_t *)arg;
+
+    while (shutdown_requested == 0)
+    {
+        // Sleep for 10 seconds, but stay responsive to shutdown requests
+        for (int i = 0; i < 10 && shutdown_requested == 0; i++) {
+            sleep(1);
+        }
+        if (shutdown_requested == 1) {
+            break;
+        }
+
+        // Build RFC 2822 compliant timestamp string
+        char timestamp[128];
+        time_t now = time(NULL);
+        struct tm tm_now;
+        localtime_r(&now, &tm_now);
+
+        size_t len = strftime(timestamp, sizeof(timestamp),
+                              "timestamp:%a, %d %b %Y %H:%M:%S %z\n", &tm_now);
+        if (len == 0) {
+            logE("strftime failed to format timestamp");
+            continue;
+        }
+
+        pthread_rwlock_wrlock(file_mutex);
+        int rc = writeToFile(timestamp, len);
+        pthread_rwlock_unlock(file_mutex);
+
+        if (rc < 0) {
+            logE("timestamp writeToFile failed");
+        }
+    }
+
+    return NULL;
+}
+
 void *handle_client(void *thread_param) 
 {
     struct thread_data* thread_func_args = (struct thread_data *) thread_param;
     int client_fd = thread_func_args->client_fd;
     pthread_mutex_t* thread_mutex = thread_func_args->thread_mutex;
-    pthread_mutex_t* file_mutex = thread_func_args->file_mutex;
+    pthread_rwlock_t* file_mutex = thread_func_args->file_mutex;
 
     size_t total_bytes = 0;
     size_t allocated = 2048;
@@ -531,6 +571,15 @@ int main(int argc, char *argv[]) {
     }
     // pthread_rwlockattr_destroy(&attr);
 
+    // Spawn a thread that periodically appends a timestamp to the data file
+    pthread_t timer_thread;
+    bool timer_thread_started = false;
+    if (pthread_create(&timer_thread, NULL, timestamp_thread, &file_mutex) == 0) {
+        timer_thread_started = true;
+    } else {
+        logE("Failed to create timestamp thread");
+    }
+
     while (shutdown_requested == 0) {
         client_fd = accept(server_fd, (struct sockaddr*) &client_addr, &addr_len);
 
@@ -581,6 +630,11 @@ int main(int argc, char *argv[]) {
     root = NULL;
     free_root_node();
     pthread_mutex_unlock(&thread_mutex);
+
+    // join the timestamp thread
+    if (timer_thread_started) {
+        pthread_join(timer_thread, NULL);
+    }
 
     // free mutexes
     pthread_rwlock_destroy(&file_mutex);
