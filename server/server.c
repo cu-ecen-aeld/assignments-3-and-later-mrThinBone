@@ -230,7 +230,7 @@ static int send_buffer(int fd, const char *buffer, size_t length) {
     return 0;
 }
 
-int sendResponse(int client_fd, char* buffer, size_t allocated) {
+int sendResponse(int client_fd, char** buffer, size_t allocated) {
     FILE *fp = fopen(DEST_FILE, "r");
     if (fp == NULL) {
         logE("Error opening file");
@@ -248,7 +248,7 @@ int sendResponse(int client_fd, char* buffer, size_t allocated) {
     size_t bytes_read;
 
     while (offset < file_length) {    
-        ret = readChunk(fp, offset, &buffer, &allocated, &bytes_read);
+        ret = readChunk(fp, offset, buffer, &allocated, &bytes_read);
         if (ret != 0) {
             logE("Error reading chunk");
             fclose(fp);
@@ -256,7 +256,7 @@ int sendResponse(int client_fd, char* buffer, size_t allocated) {
         }
 
         // size_t sent = send(client_fd, buffer, bytes_read, 0);
-        ret = send_buffer(client_fd, buffer, bytes_read);
+        ret = send_buffer(client_fd, *buffer, bytes_read);
 
         if (shutdown_requested == 1 || ret != 0) {
             logE("send failed");
@@ -273,45 +273,6 @@ int sendResponse(int client_fd, char* buffer, size_t allocated) {
     }
 
     return shutdown_requested == 0 ? 0 : -1;
-}
-
-void *timestamp_thread(void *arg)
-{
-    pthread_rwlock_t *file_mutex = (pthread_rwlock_t *)arg;
-
-    while (shutdown_requested == 0)
-    {
-        // Sleep for 10 seconds, but stay responsive to shutdown requests
-        for (int i = 0; i < 10 && shutdown_requested == 0; i++) {
-            sleep(1);
-        }
-        if (shutdown_requested == 1) {
-            break;
-        }
-
-        // Build RFC 2822 compliant timestamp string
-        char timestamp[128];
-        time_t now = time(NULL);
-        struct tm tm_now;
-        localtime_r(&now, &tm_now);
-
-        size_t len = strftime(timestamp, sizeof(timestamp),
-                              "timestamp:%a, %d %b %Y %H:%M:%S %z\n", &tm_now);
-        if (len == 0) {
-            logE("strftime failed to format timestamp");
-            continue;
-        }
-
-        pthread_rwlock_wrlock(file_mutex);
-        int rc = writeToFile(timestamp, len);
-        pthread_rwlock_unlock(file_mutex);
-
-        if (rc < 0) {
-            logE("timestamp writeToFile failed");
-        }
-    }
-
-    return NULL;
 }
 
 void *handle_client(void *thread_param) 
@@ -385,7 +346,7 @@ void *handle_client(void *thread_param)
             memcpy(buffer + total_bytes, buf, bytes);
             total_bytes += bytes;
         }
-        if (buf[bytes - 1] == '\n')
+        if (bytes > 0 && buf[bytes - 1] == '\n')
             break;
     }
 
@@ -405,7 +366,7 @@ void *handle_client(void *thread_param)
         else
         {
             pthread_rwlock_rdlock(file_mutex);
-            rc = sendResponse(client_fd, buffer, total_bytes);
+            rc = sendResponse(client_fd, &buffer, total_bytes);
             pthread_rwlock_unlock(file_mutex);
             if (rc < 0)
             {
@@ -436,6 +397,45 @@ void *handle_client(void *thread_param)
     {
         onTerminate();
     }*/
+
+    return NULL;
+}
+
+void *timestamp_thread(void *arg)
+{
+    pthread_rwlock_t *file_mutex = (pthread_rwlock_t *)arg;
+
+    while (shutdown_requested == 0)
+    {
+        // Sleep for 10 seconds, but stay responsive to shutdown requests
+        for (int i = 0; i < 10 && shutdown_requested == 0; i++) {
+            sleep(1);
+        }
+        if (shutdown_requested == 1) {
+            break;
+        }
+
+        // Build RFC 2822 compliant timestamp string
+        char timestamp[128];
+        time_t now = time(NULL);
+        struct tm tm_now;
+        localtime_r(&now, &tm_now);
+
+        size_t len = strftime(timestamp, sizeof(timestamp),
+                              "timestamp:%a, %d %b %Y %H:%M:%S %z\n", &tm_now);
+        if (len == 0) {
+            logE("strftime failed to format timestamp");
+            continue;
+        }
+
+        pthread_rwlock_wrlock(file_mutex);
+        int rc = writeToFile(timestamp, len);
+        pthread_rwlock_unlock(file_mutex);
+
+        if (rc < 0) {
+            logE("timestamp writeToFile failed");
+        }
+    }
 
     return NULL;
 }

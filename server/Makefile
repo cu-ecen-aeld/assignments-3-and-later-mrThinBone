@@ -1,9 +1,9 @@
 # Define the compiler, allowing CROSS_COMPILE to prefix it
-CC = $(CROSS_COMPILE)gcc
+CC ?= $(CROSS_COMPILE)gcc
 
 # Compiler flags
-CFLAGS = -g -Wall -Werror
-LDLIBS = -lpthread
+CFLAGS ?= -g -Wall -Werror
+LDLIBS ?= -lpthread
 INCLUDES = -I/
 
 # Default target
@@ -11,7 +11,7 @@ all: aesdsocket
 
 # Link the object file to create the executable
 aesdsocket: server.o linkedlist.o
-	$(CC) $(CFLAGS) $(INCLUDES) server.o linkedlist.o -o aesdsocket $(LDLIBS)
+	$(CC) $(CFLAGS) $(INCLUDES) $(LDFLAGS) server.o linkedlist.o -o aesdsocket $(LDLIBS)
 
 # Compile the C source file into an object file
 linkedlist.o: linked_list.c
