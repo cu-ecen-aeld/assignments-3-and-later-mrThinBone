@@ -387,6 +387,8 @@ void *handle_client(void *thread_param)
     remove_thread(&id);
     pthread_mutex_unlock(thread_mutex);
 
+    pthread_detach(id);
+
     /*if (shutdown_requested == 0)
     {
         close(client_fd);
