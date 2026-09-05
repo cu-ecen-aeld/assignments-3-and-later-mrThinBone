@@ -23,11 +23,28 @@
 #  define PDEBUG(fmt, args...) /* not debugging: nothing */
 #endif
 
+#define AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED 10
+
+struct aesd_buffer_entry {
+     void* buffptr;
+     ssize_t size;
+};
+
+struct aesd_circular_buffer {
+    struct aesd_buffer_entry* entry;
+    int in_offs;
+    int out_offs;
+    char full;
+};
+
 struct aesd_dev
 {
     /**
      * TODO: Add structure(s) and locks needed to complete assignment requirements
      */
+    struct aesd_circular_buffer* circular_buffer;
+    struct aesd_buffer_entry* unfinished_entry;
+    struct rw_semaphore lock;
     struct cdev cdev;     /* Char device structure      */
 };
 

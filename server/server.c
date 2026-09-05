@@ -30,7 +30,7 @@
 
 #define EXIT_FAILURE 1
 #define MAX_BUFFER_SIZE 10485760
-#define DEST_FILE "/var/tmp/aesdsocketdata"
+#define DEST_FILE "/dev/aesdchar"
 #define MAX_CONNECTIONS 5
 
 volatile sig_atomic_t shutdown_requested = 0;
@@ -108,96 +108,39 @@ void handle_signal(int sig)
     shutdown_requested = 1;
 }
 
-int writeToFile(const char* data, size_t size) {
+int writeCharDev(const char* data, size_t size) {
     if (shutdown_requested == 1) return -1;
 
-    logD("... Writing data of size %zu to file", size);
-    mkdir("/var/tmp/", 0755);
+    logD("... Writing data of size %zu to char device", size);
     
-    FILE *fp = fopen(DEST_FILE, "a");
-    if (fp == NULL) {
-        logE("Error opening file");
+    int fd = open(DEST_FILE, O_WRONLY | O_APPEND);
+    if (fd < 0) {
+        logE("Error opening char device");
         return -1;
     }
     
-    size_t written = fwrite(data, 1, size, fp);
-    if (written != size) {
-        logE("Error writing to file - expected: %zu, got: %zu", size, written);
-        fclose(fp);
-        return -1;
-    }
-    if (fclose(fp) != 0) {
-        logE("Error closing file");
-        return -1;
-    }
-    return shutdown_requested == 0 ? 0 : -1;
-}
-
-int getFileLength(FILE* fp, long* file_size) {
-    if (shutdown_requested == 1) return -1;
-    // Move the file pointer to the end of the file
-    if (fseek(fp, 0L, SEEK_END) != 0) {
-        logE("Error seeking to end of file");
-        fclose(fp);
-        return -1;
-    }
-    // Get the size of the file
-    *file_size = ftell(fp);
-    if (*file_size < 0) {
-        logE("Error getting file size");
-        fclose(fp);
-        return -1;
-    }
-    return 0;
-}
-
-// return -1 on error, 0 on success
-int readChunk(FILE* fp, long offset, char** ptr_buffer, size_t* allocated, size_t* bytes_read) {
-    if (shutdown_requested == 1) return -1;
-    logD("... Reading data from file");
-
-    // Move the file pointer to the designated offset of the file
-    if (fseek(fp, offset, SEEK_SET) != 0) {
-        logE("Error seeking to offset of file");
-        return -1;
-    }
-
-    int c;
-    size_t count = 0;
-    char* buffer = *ptr_buffer;
-    size_t allocated_inc = *allocated;
-
-    while ((c = fgetc(fp)) != EOF)
-	{
-        if (shutdown_requested == 1) return -1;
-
-        if (count >= allocated_inc) {
-            allocated_inc = allocated_inc + 2048;
-            // Reallocate memory for the buffer
-            char* temp = realloc(*ptr_buffer, allocated_inc);
-            if (temp == NULL) {
-                logE("readChunk-Failed to reallocate memory for buffer");
-                return -1;
+    ssize_t total_written = 0;
+    ssize_t written = 0;
+    do {
+        written = write(fd, data + total_written, size - total_written);
+        if (written < 0) {
+            if (errno == EINTR) {
+                continue; // Retry if interrupted by signal
             }
-            *ptr_buffer = temp;
-            buffer = temp;
+            logE("Error writing to char device: %s", strerror(errno));
+            close(fd);
+            return -1;
         }
-
-        buffer[count++] = c;
-		if (c == '\n') {
-            break;
+        if (written == 0) {
+            logE("No bytes written to char device");
         }
-	}
+        total_written += written; // Update the total bytes written
+    } while (written > 0 && total_written < size); // Retry if interrupted by signal
 
-    if (ferror(fp)) {
-        logE("Error reading from file");
+    if (close(fd) != 0) {
+        logE("Error closing char device");
         return -1;
     }
-
-    *allocated = allocated_inc;
-    *bytes_read = count;
-
-    
     return shutdown_requested == 0 ? 0 : -1;
 }
 
@@ -230,33 +173,18 @@ static int send_buffer(int fd, const char *buffer, size_t length) {
     return 0;
 }
 
-int sendResponse(int client_fd, char** buffer, size_t allocated) {
-    FILE *fp = fopen(DEST_FILE, "r");
-    if (fp == NULL) {
+int sendResponseToClient(int client_fd) {
+    int fd = open(DEST_FILE, O_RDONLY);
+    if (fd < 0) {
         logE("Error opening file");
         return -1;
     }
 
-    long file_length;
-    int ret = getFileLength(fp, &file_length);
-    if (ret != 0 || shutdown_requested == 1) {
-        fclose(fp);
-        return -1;
-    }
-
-    long offset = 0;
-    size_t bytes_read;
-
-    while (offset < file_length) {    
-        ret = readChunk(fp, offset, buffer, &allocated, &bytes_read);
-        if (ret != 0) {
-            logE("Error reading chunk");
-            fclose(fp);
-            return -1;
-        }
-
-        // size_t sent = send(client_fd, buffer, bytes_read, 0);
-        ret = send_buffer(client_fd, *buffer, bytes_read);
+    ssize_t bytes_read;
+    char buf[1024];
+    int ret;
+    while ((bytes_read = read(fd, buf, sizeof(buf))) > 0) {
+        ret = send_buffer(client_fd, buf, bytes_read);
 
         if (shutdown_requested == 1 || ret != 0) {
             logE("send failed");
@@ -264,10 +192,9 @@ int sendResponse(int client_fd, char** buffer, size_t allocated) {
         } else {
             logD("Sent %zd bytes", bytes_read);
         }
-        offset += bytes_read;
     }
 
-    if (fclose(fp) != 0) {
+    if (close(fd) != 0) {
         logE("Error closing file");
         return -1;
     }
@@ -355,9 +282,10 @@ void *handle_client(void *thread_param)
 
         logD("Received %zd bytes", total_bytes);
         // Write to file and read back from it
-        pthread_rwlock_wrlock(file_mutex);
-        int rc = writeToFile(buffer, total_bytes);
-        pthread_rwlock_unlock(file_mutex);
+        // pthread_rwlock_wrlock(file_mutex);
+        // int rc = writeToFile(buffer, total_bytes);
+        int rc = writeCharDev(buffer, total_bytes);
+        // pthread_rwlock_unlock(file_mutex);
 
         if (rc < 0)
         {
@@ -365,9 +293,10 @@ void *handle_client(void *thread_param)
         }
         else
         {
-            pthread_rwlock_rdlock(file_mutex);
-            rc = sendResponse(client_fd, &buffer, total_bytes);
-            pthread_rwlock_unlock(file_mutex);
+            // pthread_rwlock_rdlock(file_mutex);
+            // rc = sendResponse(client_fd, &buffer, total_bytes);
+            rc = sendResponseToClient(client_fd);
+            // pthread_rwlock_unlock(file_mutex);
             if (rc < 0)
             {
                 logE("sendResponse failed");
@@ -388,56 +317,6 @@ void *handle_client(void *thread_param)
     pthread_mutex_unlock(thread_mutex);
 
     pthread_detach(id);
-
-    /*if (shutdown_requested == 0)
-    {
-        close(client_fd);
-        client_fd = -1;
-        logD("Closed connection from %d", inet_ntoa(client_addr.sin_addr));
-    }
-    else
-    {
-        onTerminate();
-    }*/
-
-    return NULL;
-}
-
-void *timestamp_thread(void *arg)
-{
-    pthread_rwlock_t *file_mutex = (pthread_rwlock_t *)arg;
-
-    while (shutdown_requested == 0)
-    {
-        // Sleep for 10 seconds, but stay responsive to shutdown requests
-        for (int i = 0; i < 10 && shutdown_requested == 0; i++) {
-            sleep(1);
-        }
-        if (shutdown_requested == 1) {
-            break;
-        }
-
-        // Build RFC 2822 compliant timestamp string
-        char timestamp[128];
-        time_t now = time(NULL);
-        struct tm tm_now;
-        localtime_r(&now, &tm_now);
-
-        size_t len = strftime(timestamp, sizeof(timestamp),
-                              "timestamp:%a, %d %b %Y %H:%M:%S %z\n", &tm_now);
-        if (len == 0) {
-            logE("strftime failed to format timestamp");
-            continue;
-        }
-
-        pthread_rwlock_wrlock(file_mutex);
-        int rc = writeToFile(timestamp, len);
-        pthread_rwlock_unlock(file_mutex);
-
-        if (rc < 0) {
-            logE("timestamp writeToFile failed");
-        }
-    }
 
     return NULL;
 }
@@ -573,14 +452,6 @@ int main(int argc, char *argv[]) {
     }
     // pthread_rwlockattr_destroy(&attr);
 
-    // Spawn a thread that periodically appends a timestamp to the data file
-    pthread_t timer_thread;
-    bool timer_thread_started = false;
-    if (pthread_create(&timer_thread, NULL, timestamp_thread, &file_mutex) == 0) {
-        timer_thread_started = true;
-    } else {
-        logE("Failed to create timestamp thread");
-    }
 
     while (shutdown_requested == 0) {
         client_fd = accept(server_fd, (struct sockaddr*) &client_addr, &addr_len);
@@ -633,10 +504,6 @@ int main(int argc, char *argv[]) {
     free_root_node();
     pthread_mutex_unlock(&thread_mutex);
 
-    // join the timestamp thread
-    if (timer_thread_started) {
-        pthread_join(timer_thread, NULL);
-    }
 
     // free mutexes
     pthread_rwlock_destroy(&file_mutex);
