@@ -19,7 +19,9 @@
 #include <stdlib.h>
 #include <pthread.h>
 #include <time.h>
+#include <sys/ioctl.h>
 #include "linked_list.h"
+#include "../aesd-char-driver/aesd_ioctl.h"
 
 // ps aux | grep aesdsocket
 // kill [pid]
@@ -115,7 +117,7 @@ int writeCharDev(const char* data, size_t size) {
     
     int fd = open(DEST_FILE, O_WRONLY | O_APPEND);
     if (fd < 0) {
-        logE("Error opening char device");
+        logE("Error opening char device _write: %d", fd);
         return -1;
     }
     
@@ -173,8 +175,8 @@ static int send_buffer(int fd, const char *buffer, size_t length) {
     return 0;
 }
 
-int sendResponseToClient(int client_fd) {
-    int fd = open(DEST_FILE, O_RDONLY);
+int sendResponseToClient(int client_fd, int opened_fd) {
+    int fd = (opened_fd >= 0) ? opened_fd : open(DEST_FILE, O_RDONLY);
     if (fd < 0) {
         logE("Error opening file");
         return -1;
@@ -202,12 +204,14 @@ int sendResponseToClient(int client_fd) {
     return shutdown_requested == 0 ? 0 : -1;
 }
 
+bool handleIOseekto(int* fd, char* command, size_t len, int* ret);
+
 void *handle_client(void *thread_param) 
 {
     struct thread_data* thread_func_args = (struct thread_data *) thread_param;
     int client_fd = thread_func_args->client_fd;
     pthread_mutex_t* thread_mutex = thread_func_args->thread_mutex;
-    pthread_rwlock_t* file_mutex = thread_func_args->file_mutex;
+//    pthread_rwlock_t* file_mutex = thread_func_args->file_mutex;
 
     size_t total_bytes = 0;
     size_t allocated = 2048;
@@ -284,18 +288,24 @@ void *handle_client(void *thread_param)
         // Write to file and read back from it
         // pthread_rwlock_wrlock(file_mutex);
         // int rc = writeToFile(buffer, total_bytes);
-        int rc = writeCharDev(buffer, total_bytes);
+        int rc = 0;
+        int opened_fd = -1;
+        bool is_ioctl_handled = handleIOseekto(&opened_fd, buffer, total_bytes, &rc);
+        if (!is_ioctl_handled) {
+            rc = writeCharDev(buffer, total_bytes);
+        }
+        
         // pthread_rwlock_unlock(file_mutex);
 
         if (rc < 0)
         {
-            logE("writeToFile failed");
+            logE("writeToFile/ioctl failed");
         }
         else
         {
             // pthread_rwlock_rdlock(file_mutex);
             // rc = sendResponse(client_fd, &buffer, total_bytes);
-            rc = sendResponseToClient(client_fd);
+            rc = sendResponseToClient(client_fd, opened_fd);
             // pthread_rwlock_unlock(file_mutex);
             if (rc < 0)
             {
@@ -517,4 +527,39 @@ int main(int argc, char *argv[]) {
     }
 
     return 0;
+}
+
+bool handleIOseekto(int* fd, char* command, size_t len, int* ret) {
+    // compare to AESDCHAR_IOCSEEKTO:X,Y
+
+    if (len > 19 && strncmp(command, "AESDCHAR_IOCSEEKTO:", 19) == 0) {
+        // Extract the X and Y values from the command string
+        uint32_t x, y;
+        int check = sscanf(command + 19, "%u,%u", &x, &y);
+
+	if (check == 2) {
+            logD("Handling IO seek to command: %u,%u", x, y);
+            // Perform the ioctl operation here if needed
+            struct aesd_seekto data = {
+                .write_cmd = x,
+                .write_cmd_offset = y
+            };
+
+            *fd = open(DEST_FILE, O_RDONLY);
+            if (*fd < 0) {
+                logE("Error opening file");
+                *ret = -1;
+                return true;
+            }
+
+            *ret = ioctl(*fd, AESDCHAR_IOCSEEKTO, &data);
+            if (*ret != 0) {
+                logE("IO seek to command failed: %d", *ret);
+            }
+        } else {
+            *ret = -1;
+        }
+        return true;
+    }
+    return false;
 }

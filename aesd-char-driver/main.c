@@ -19,7 +19,9 @@
 #include <linux/fs.h> // file_operations
 #include <linux/slab.h>
 #include <linux/uaccess.h>
+#include <linux/compat.h>
 #include "aesdchar.h"
+#include "aesd_ioctl.h"
 int aesd_major =   0; // use dynamic major
 int aesd_minor =   0;
 
@@ -104,6 +106,7 @@ static ssize_t circular_buffer_add_entry(struct aesd_circular_buffer *circ_buf, 
     out:
         return retval;
 }
+
 
 int aesd_open(struct inode *inode, struct file *filp)
 {
@@ -265,12 +268,156 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
         up_write(&dev->lock);
         return retval;
 }
+
+size_t aesd_circular_buffer_size(struct aesd_circular_buffer *circ_buf, uint32_t max_entries) {
+    size_t size = 0;
+    for (int i = 0; i < max_entries; i++) {
+    	int index = i + circ_buf->out_offs;
+    	if (index >= AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED) {
+    	    index = index - AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED;
+    	}
+        if (circ_buf->entry[index].buffptr == NULL) {
+            break;
+        }
+        size += circ_buf->entry[index].size;
+    }
+    return size;
+}
+
+loff_t aesd_llseek(struct file *filp, loff_t offset, int whence) {
+    struct aesd_dev *dev = filp->private_data;
+    loff_t new_pos = 0;
+
+    if (down_read_interruptible(&dev->lock) != 0) {
+        return -ERESTARTSYS;
+    }
+    size_t circ_buf_size = aesd_circular_buffer_size(dev->circular_buffer, AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED);
+
+    switch(whence) {
+        case SEEK_SET:
+            new_pos = offset;
+            break;
+        case SEEK_CUR:
+            new_pos = filp->f_pos + offset;
+            break;
+        case SEEK_END:
+            new_pos = circ_buf_size + offset;
+            break;
+        default:
+            up_read(&dev->lock);
+            return -EINVAL;
+    }
+
+    if (new_pos < 0 || new_pos >= circ_buf_size) {
+        up_read(&dev->lock);
+        return -EINVAL;
+    }
+    filp->f_pos = new_pos;
+    up_read(&dev->lock);
+    return new_pos;
+}
+
+long ioctl_seekto(struct file *filp, struct aesd_seekto* arg) {
+    struct aesd_dev *dev = filp->private_data;
+    long retval = 0;
+
+    if (down_read_interruptible(&dev->lock) != 0) {
+        return -ERESTARTSYS;
+    }
+
+    PDEBUG(">>>>AESDCHAR_IOCSEEKTO");
+
+    /* Access local copy safely */
+    uint32_t request_index = arg->write_cmd;
+    uint32_t offset = arg->write_cmd_offset;
+    PDEBUG("seek: %u, %u", request_index, offset);
+
+    if (request_index >= AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED)
+    {
+        retval = -EINVAL;
+        PDEBUG("fail 1");
+        goto out;
+    }
+
+    size_t end_offset = 0;
+
+    int buffer_index = request_index + dev->circular_buffer->out_offs;
+    if (buffer_index >= AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED)
+    {
+        buffer_index = buffer_index - AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED;
+    }
+    PDEBUG("buffer_index: %d", buffer_index);
+
+    if (dev->circular_buffer->entry[buffer_index].buffptr == NULL)
+    {
+        PDEBUG("entry is NULL");
+        retval = -EINVAL;
+        goto out;
+    }
+
+    end_offset = dev->circular_buffer->entry[buffer_index].size;
+    if (offset >= end_offset)
+    {
+        PDEBUG("out of range");
+        retval = -EINVAL;
+        goto out;
+    }
+
+    size_t entry_start_offset = aesd_circular_buffer_size(dev->circular_buffer, request_index);
+    filp->f_pos = entry_start_offset + offset;
+    PDEBUG("seek done: %lld, %lld", entry_start_offset, filp->f_pos);
+
+    out:
+        up_read(&dev->lock);
+        return retval;
+}
+
+long aesd_ioctl(int compat_mode, struct file *filp, unsigned int cmd, unsigned long arg) {
+    long retval = 0;
+
+    switch(cmd) {
+        case AESDCHAR_IOCSEEKTO:
+            struct aesd_seekto seekto;
+            struct aesd_seekto __user *ptr;
+            if (compat_mode == 1) {
+            	ptr = compat_ptr(arg);
+            } else {
+                ptr = (struct aesd_seekto __user *)arg;
+            }
+            if (copy_from_user(&seekto, ptr, sizeof(seekto))) {
+                return -EFAULT;
+            }
+            retval = ioctl_seekto(filp, &seekto);
+
+            break;
+        default:
+            retval = -EINVAL;
+            break;
+    }
+
+    
+    return retval;
+}
+
+long aesd_unlock_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
+{
+    return aesd_ioctl(0, filp, cmd, arg);
+}
+
+long aesd_compat_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
+{
+    return aesd_ioctl(1, filp, cmd, arg);
+}
+
 struct file_operations aesd_fops = {
     .owner =    THIS_MODULE,
     .read =     aesd_read,
     .write =    aesd_write,
     .open =     aesd_open,
     .release =  aesd_release,
+    .llseek =   aesd_llseek,
+    .unlocked_ioctl = aesd_unlock_ioctl,
+    .compat_ioctl = aesd_compat_ioctl,
 };
 
 static int aesd_setup_cdev(struct aesd_dev *dev)
